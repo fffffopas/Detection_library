@@ -16,8 +16,8 @@ def clip_boxes(boxes, shape=[1,1]):
 
 
 def grid_xy(dtype=torch.int32, device='cpu', size: int = 52, count_box_per_pred: int=3):
-    shifts_x = torch.arange(0, size, dtype=dtype, device="cpu") / size
-    shifts_y = torch.arange(0, size, dtype=dtype, device="cpu") / size   
+    shifts_x = torch.arange(0, size, dtype=dtype, device=device) / size
+    shifts_y = torch.arange(0, size, dtype=dtype, device=device) / size   
 
     shifts_x, shifts_y = torch.meshgrid(shifts_x, shifts_y, indexing="xy")
 

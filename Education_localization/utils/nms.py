@@ -259,7 +259,7 @@ def nms_yolov3_vectorized(pred, score_threshold=0.25, iou_threshold=0.45, agnost
     if boxes.shape[0] == 0:
         return [torch.zeros((0, 6), device=device) for _ in range(B)]
 
-    group_id = img_idx * 10000 + idx_cls.float()
+    group_id = img_idx * 20 + idx_cls.float()
     scaling = group_id.unsqueeze(1) * (0 if agnostic else max_wh)
     boxes_shifted = boxes + scaling
 

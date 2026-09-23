@@ -173,9 +173,30 @@ class DatasetPascalVocYOLOv3(DatasetPascalVOC):
         self.achors = achors
         self.mode = mode
 
+        paths, sizes, boxes, labels, offsets = [], [], [], [], [0]
+
+        for item in data:
+            paths.append(str(item["path_img"]))
+            sizes.append(item["size_img"])
+            for obj in item["objs_ann"]:
+                boxes.append(obj["bbox"])
+                labels.append(obj["label"])
+            offsets.append(len(boxes))
+
+        self.paths = np.array(paths)
+        self.sizes = np.array(sizes, dtype=np.int32)
+        self.boxes = np.array(boxes, dtype=np.float32) if boxes else np.zeros((0, 4), dtype=np.float32)
+        self.labels = np.array(labels, dtype=np.int64)
+        self.offsets = np.array(offsets, dtype=np.int64)
+
+        
     def __getitem__(self, index):
-        data = self.data[index]
-        path_img = data["path_img"]
+        path_img = self.paths[index]
+        W, H = self.sizes[index]
+        start, end = self.offsets[index], self.offsets[index + 1]
+        bboxes_np = self.boxes[start:end]
+        labels_np = self.labels[start:end]
+
 
         np_f = Path(path_img).with_suffix(".npy")
         if np_f.exists():
@@ -185,18 +206,16 @@ class DatasetPascalVocYOLOv3(DatasetPascalVOC):
         else:
             img = Image.open(path_img).convert("RGB")
 
-        W, H = data["size_img"]
-        bboxes = [obj_ann["bbox"] for obj_ann in data["objs_ann"]]
         bboxes = tv_tensors.BoundingBoxes(
-            bboxes,
+            torch.from_numpy(bboxes_np.copy()),
             format="XYXY",
-            canvas_size=[H, W],
+            canvas_size=[int(H), int(W)],
         )
+        labels = torch.from_numpy(labels_np.copy())
 
-        labels = [obj_ann["label"] for obj_ann in data["objs_ann"]]
         target_bl = {
             "bboxes" : bboxes,
-            "labels" : torch.tensor(labels)
+            "labels" : labels.detach().clone()
         }
 
         img, target_bl = self.transform(img, target_bl)
@@ -207,7 +226,7 @@ class DatasetPascalVocYOLOv3(DatasetPascalVOC):
         whwh = torch.tensor([self.image_size, self.image_size, self.image_size, self.image_size])
         bboxes_xyxy = bboxes / whwh
         if self.mode == "test":
-            boxes_classes = torch.cat([bboxes_xyxy, labels.unsqueeze(dim=1)], dim=1)
+            boxes_classes = torch.cat([bboxes_xyxy.as_subclass(torch.Tensor), labels.unsqueeze(dim=1)], dim=1)
             return img, boxes_classes
 
         bboxes = xyxy2xywh(bboxes_xyxy)
@@ -219,8 +238,9 @@ class DatasetPascalVocYOLOv3(DatasetPascalVOC):
         achor_idx = max_similar % 3
 
         small_objects, medium_objects, large_objects = self._create_output(scale_idx, achor_idx, bboxes, labels)
+        gt_boxes = bboxes_xyxy.as_subclass(torch.Tensor)
 
-        return img, small_objects, medium_objects, large_objects
+        return img, small_objects, medium_objects, large_objects, gt_boxes
 
     def _create_output(self, scale_idx, achor_idx, bboxes, labels):
         small_objects = torch.zeros(len(self.list_size), self.list_size[0], self.list_size[0], 5 + self.C)
@@ -261,13 +281,14 @@ class DatasetPascalVocYOLOv3(DatasetPascalVOC):
     @staticmethod
     def collate_fn(batch):
         data = list(zip(*batch))
-        if len(data) == 4:
+        if len(data) == 5:
             imgs = torch.stack(data[0])
             small_objects = torch.stack(data[1])
             medium_objects = torch.stack(data[2])
             large_objects = torch.stack(data[3])
+            gt_boxes = list(data[4])
 
-            return imgs, (small_objects, medium_objects, large_objects)
+            return imgs, (small_objects, medium_objects, large_objects, gt_boxes)
 
         imgs = torch.stack(data[0])
         boxes_classes = data[1]

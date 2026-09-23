@@ -201,8 +201,8 @@ class YOLOv3Loss(nn.Module):
         super().__init__()
         self.list_size = list_size
         self.C = C
-        self.lambda_coord = 5
-        self.lambda_noobj = 0.5
+        self.lambda_coord = 1
+        self.lambda_noobj = 1
         self.register_buffer("anchors", anchors)
         self.grid = self._create_anchor_grid()
         
@@ -234,6 +234,7 @@ class YOLOv3Loss(nn.Module):
         batch_size = pred[0].shape[0]
         device = pred[0].device
         losses = []
+        gt_boxes_all = target[3]
 
         for i in range(len(self.list_size)):
             size = pred[i].shape[2]
@@ -253,11 +254,10 @@ class YOLOv3Loss(nn.Module):
 
             with torch.no_grad():
                 pred_xyxy = xcell_ycell_wh2xyxy(pred_boxes, size=size, count=3, anchors=anchors_i)
-                target_xyxy =  xcell_ycell_wh2xyxy(target_boxes, size=size, count=3, anchors=anchors_i)
                 ignore_mask = torch.zeros_like(obj_box_idx, device=device)
 
                 for b in range(batch_size):
-                    gt_xyxy_b = target_xyxy[b][obj_box_idx[b]]
+                    gt_xyxy_b = gt_boxes_all[b].to(device)
                     if gt_xyxy_b.shape[0] == 0:
                         continue
 
@@ -274,22 +274,24 @@ class YOLOv3Loss(nn.Module):
 
             pred_conf = pred_i_obj[..., 4][obj_box_idx]
             with torch.no_grad():
-                target_conf = bbox_iou(pred_xyxy, target_xyxy)[obj_box_idx]
+                target_conf = target_i_obj[..., 4][obj_box_idx]
 
             conf_loss = F.binary_cross_entropy_with_logits(pred_conf, target_conf, reduction="sum")
 
             class_loss = F.binary_cross_entropy_with_logits(pred_class[obj_box_idx], target_class[obj_box_idx], reduction="sum")
 
-            no_obj_box_loss = (pred_i_obj[..., 4][no_obj_box_idx]).square().sum()
+            no_obj_box_loss = F.binary_cross_entropy_with_logits(pred_i_obj[..., 4][no_obj_box_idx], torch.zeros_like(pred_i_obj[..., 4][no_obj_box_idx]), reduction="sum")
 
-            losses.append(self.lambda_coord * xywh_loss + conf_loss + class_loss + self.lambda_noobj * no_obj_box_loss)
+            n_pos = obj_box_idx.sum().clamp(min=1)
+
+            losses.append((self.lambda_coord * xywh_loss + conf_loss + class_loss) / n_pos + (self.lambda_noobj * no_obj_box_loss) / no_obj_box_idx.sum().clamp(min=1))
 
         loss = sum(losses)/batch_size
 
         return loss, loss.item()
 
     @torch.no_grad()
-    def forward_eval(self, pred):
+    def forward_eval(self, pred, image_size=416):
         inference_pred = []
         batch_size = pred[0].shape[0]
         
@@ -297,10 +299,16 @@ class YOLOv3Loss(nn.Module):
             size = pred[i].shape[2]
             grid_i = getattr(self, f"grid_{size}")
             pred_i = self._transform_pred(pred[i], size, batch_size)
+            anchors_i = self.anchors[3*i : 3*i+3]
+
+            #pred_xyxy = xcell_ycell_wh2xyxy(pred_i, size=size, count=3, anchors=anchors_i)
 
             xy = (F.sigmoid(pred_i[..., :2]) + grid_i[..., :2])/size
-            wh = grid_i[..., 2:4] * torch.exp(pred_i[..., 2:4])
+            wh = grid_i[..., 2:4] * torch.exp(pred_i[..., 2:4]).clamp(max=10)
             conf_class = F.sigmoid(pred_i[..., 4:])
+
+            xy = xy * image_size
+            wh = wh * image_size
 
             inference_pred.append(torch.cat([xy, wh, conf_class], dim=-1).reshape(batch_size, size*size*3, -1))
 

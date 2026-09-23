@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import math
 
 class Block(nn.Module):
     def __init__(self, in_channels: int, act: str="leakyrelu", bias: bool=False):
@@ -192,6 +193,12 @@ class YOLOv3(nn.Module):
             act_func[act],
             nn.Conv2d(in_channels=448, out_channels=(3 * (5 + self.num_classes)), kernel_size=1, bias=True) # -> выход 3
         )
+
+        for head in (self.detection_head_13, self.detection_head_26, self.detection_head_52):
+            b = head[-1].bias.view(3, -1)
+            b.data[:, 4] += math.log(0.01 / 0.99)
+            b.data[:, 5:] += math.log(0.01 / 0.99)
+            head[-1].bias = torch.nn.Parameter(b.view(-1), requires_grad=True)
 
     def forward(self, x):
         grid_52, grid_26, grid_13 = self.darknet(x)
