@@ -216,7 +216,7 @@ def nms_vectorized(boxes, scores, iou_threshold):
     keep_sorted = (~suppressed).nonzero(as_tuple=True)[0]
     return order[keep_sorted]
 
-def nms_yolov3_vectorized(pred, score_threshold=0.25, iou_threshold=0.45, agnostic=False, max_wh=7600, classes=None, max_nms=1000, max_det=300):
+def nms_yolov3_vectorized(pred, score_threshold=0.25, iou_threshold=0.45, agnostic=False, max_wh=7600, classes=None, k_per_img=100, max_det=30):
     device = pred.device
 
     if classes is not None:
@@ -225,26 +225,22 @@ def nms_yolov3_vectorized(pred, score_threshold=0.25, iou_threshold=0.45, agnost
     B, N, _ = pred.shape
     pred = torch.cat((xywh2xyxy(pred[..., :4]), pred[..., 4:]), dim=-1)
 
-    img_idx = torch.arange(B, device=device).view(B, 1).expand(B, N).reshape(-1)
+    k = min(k_per_img, N)
+    top_obj, top_idx = pred[..., 4].topk(k, dim=1)
+    pred = torch.gather(pred, 1, top_idx.unsqueeze(-1).expand(-1, -1, pred.shape[-1]))
+
+    img_idx = torch.arange(B, device=device).view(B, 1).expand(B, k).reshape(-1)
     pred_flat = pred.reshape(-1, pred.shape[-1])
 
     mask = pred_flat[:, 4] > score_threshold
     pred_flat = pred_flat[mask]
     img_idx = img_idx[mask]
 
-    if pred_flat.shape[0] > max_nms:
-        top_idx = pred_flat[:, 4].argsort(descending=True)[:max_nms]
-        pred_flat = pred_flat[top_idx]
-        img_idx = img_idx[top_idx]
-
     if pred_flat.shape[0] == 0:
         return [torch.zeros((0, 6)) for _ in range(B)]
 
-    pred_flat[:, 5:] *= pred_flat[:, 4:5]
     boxes = pred_flat[:, :4]
-    cls_scores = pred_flat[:, 5:]
-
-    scores, idx_cls = cls_scores.max(dim=1)
+    scores, idx_cls = (pred_flat[:, 5:] * pred_flat[:, 4:5]).max(dim=1)
 
     keep_score = scores > score_threshold
     boxes = boxes[keep_score]
@@ -267,14 +263,9 @@ def nms_yolov3_vectorized(pred, score_threshold=0.25, iou_threshold=0.45, agnost
     final = torch.cat([boxes[keep], scores[keep].unsqueeze(1), idx_cls[keep].float().unsqueeze(1)], dim=1)
     final_img_idx = img_idx[keep]
 
-    if final.shape[0] > max_det:
-        top_idx = final[:, 4].argsort(descending=True)[:max_det]
-        final = final[top_idx]
-        final_img_idx = final_img_idx[top_idx]
-
     output = [torch.zeros((0,6), device=device) for _ in range(B)]
     for b in range(B):
-        output[b] = final[final_img_idx == b]
+        output[b] = final[final_img_idx == b][:max_det]
 
     return output
 
