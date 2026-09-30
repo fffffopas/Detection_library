@@ -88,7 +88,7 @@ Education_localization
 | `general.py` | `grid_xy`: распределение таргетов по сетке в формате YOLOv3 |
 | `nms.py` | `nms_yolov3_vectorized`: векторизованная версия алгоритма NMS |
 
-## 🚀 Быстрый старт
+## 🚀 Установка и импорты
 
 ```bash
 git clone https://github.com/fffffopas/Detection_library.git
@@ -190,7 +190,7 @@ Education_localization
 | `general.py` | `grid_xy`: assigns targets to the YOLOv3 grid |
 | `nms.py` | `nms_yolov3_vectorized`: vectorized NMS implementation |
 
-## 🚀 Quick start
+## 🚀 Installation & imports
 
 ```bash
 git clone https://github.com/fffffopas/Detection_library.git
