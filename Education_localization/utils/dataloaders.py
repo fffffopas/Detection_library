@@ -167,10 +167,8 @@ class DatasetPascalVOC(Dataset):
         return imgs, list(boxes_classes)
 
 class DatasetPascalVocYOLOv3(DatasetPascalVOC):
-    def __init__(self, data, mode=None, transform=None, image_size=300, list_size=[52, 26, 13], achors: torch.Tensor=None):
+    def __init__(self, data, mode=None, transform=None, image_size=300):
         super().__init__(data, mode, transform, image_size=image_size)
-        self.list_size = list_size
-        self.achors = achors
         self.mode = mode
 
         paths, sizes, boxes, labels, offsets = [], [], [], [], [0]
@@ -188,7 +186,10 @@ class DatasetPascalVocYOLOv3(DatasetPascalVOC):
         self.boxes = np.array(boxes, dtype=np.float32) if boxes else np.zeros((0, 4), dtype=np.float32)
         self.labels = np.array(labels, dtype=np.int64)
         self.offsets = np.array(offsets, dtype=np.int64)
+        del self.data
 
+    def __len__(self):
+        return len(self.paths)
         
     def __getitem__(self, index):
         path_img = self.paths[index]
@@ -225,70 +226,12 @@ class DatasetPascalVocYOLOv3(DatasetPascalVOC):
 
         whwh = torch.tensor([self.image_size, self.image_size, self.image_size, self.image_size])
         bboxes_xyxy = bboxes / whwh
-        if self.mode == "test":
-            boxes_classes = torch.cat([bboxes_xyxy.as_subclass(torch.Tensor), labels.unsqueeze(dim=1)], dim=1)
-            return img, boxes_classes
 
-        bboxes = xyxy2xywh(bboxes_xyxy)
-
-        iou_matrix = iou_wh(bboxes[:, 2:], self.achors)
-        max_similar = iou_matrix.argmax(dim=1)
-
-        scale_idx = torch.div(max_similar, 3, rounding_mode="floor")
-        achor_idx = max_similar % 3
-
-        small_objects, medium_objects, large_objects = self._create_output(scale_idx, achor_idx, bboxes, labels)
-        gt_boxes = bboxes_xyxy.as_subclass(torch.Tensor)
-
-        return img, small_objects, medium_objects, large_objects, gt_boxes
-
-    def _create_output(self, scale_idx, achor_idx, bboxes, labels):
-        small_objects = torch.zeros(len(self.list_size), self.list_size[0], self.list_size[0], 5 + self.C)
-        medium_objects = torch.zeros(len(self.list_size), self.list_size[1], self.list_size[1], 5 + self.C)
-        large_objects = torch.zeros(len(self.list_size), self.list_size[2], self.list_size[2], 5 + self.C)
-
-        list_objects = [small_objects, medium_objects, large_objects]
-        for i in range(3):
-            S = list_objects[i].shape[1]
-            w_cell = 1/S
-            h_cell = 1/S
-            wh_cell = torch.tensor([w_cell, h_cell])
-
-            mask = scale_idx == i
-            bboxes_mask = bboxes[mask]
-            labels_mask = labels[mask]
-
-            n_l = len(labels_mask)
-            cls_labels = torch.zeros(n_l, self.C)
-            cls_labels[[*range(n_l)], labels_mask] = 1
-            conf = torch.ones(n_l, 1)
-
-            idx = torch.floor(bboxes_mask[:, :2] / wh_cell)
-            ij = torch.tensor_split(idx.long(), 2, dim=1)
-            i_idx = ij[0].squeeze(1)
-            j_idx = ij[1].squeeze(1)
-
-            anchor_wh = self.achors[3 * scale_idx[mask] + achor_idx[mask]]
-
-            bboxes_mask[:, :2] = (bboxes_mask[:, :2] % wh_cell) / wh_cell
-            bboxes_mask[:, 2:] = torch.log(bboxes_mask[:, 2:]/ anchor_wh + 1e-16)
-            bboxes_conf_labels = torch.cat([bboxes_mask, conf, cls_labels], dim=1)
-            list_objects[i][achor_idx[mask], j_idx, i_idx] = bboxes_conf_labels[:, :]
-            list_objects[i] = list_objects[i].permute(1, 2, 0, 3)
-
-        return list_objects
+        return img, torch.cat([bboxes_xyxy.as_subclass(torch.Tensor), labels.unsqueeze(dim=1)], dim=1)
 
     @staticmethod
     def collate_fn(batch):
         data = list(zip(*batch))
-        if len(data) == 5:
-            imgs = torch.stack(data[0])
-            small_objects = torch.stack(data[1])
-            medium_objects = torch.stack(data[2])
-            large_objects = torch.stack(data[3])
-            gt_boxes = list(data[4])
-
-            return imgs, (small_objects, medium_objects, large_objects, gt_boxes)
 
         imgs = torch.stack(data[0])
         boxes_classes = data[1]
@@ -321,7 +264,7 @@ def create_loader(
         shuffle=shuffle_train,
         num_workers=workers,
         pin_memory=pin_memory,
-        persistent_workers=True,
+        persistent_workers=False,
         collate_fn=dataset_class.collate_fn
     )
     val_loader = DataLoader(
@@ -330,7 +273,7 @@ def create_loader(
             shuffle=False,
             num_workers=workers,
             pin_memory=pin_memory,
-            persistent_workers=True,
+            persistent_workers=False,
             collate_fn=dataset_class.collate_fn
         )
 

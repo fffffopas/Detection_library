@@ -1,8 +1,8 @@
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
-from utils.convert_box import xcell_ycell_wh2xyxy
-from utils.bbox_iou import bbox_iou, box_iou
+from utils.convert_box import xcell_ycell_wh2xyxy, xyxy2xywh
+from utils.bbox_iou import bbox_iou, box_iou, iou_wh
 
 class YOLOv1Loss(nn.Module):
 
@@ -226,6 +226,41 @@ class YOLOv3Loss(nn.Module):
             grid = torch.cat([x, y, anchors_i], dim=-1)
             self.register_buffer(f"grid_{size}", grid)
 
+    def _create_output(self, scale_idx, achor_idx, bboxes, labels):
+        small_objects = torch.zeros(len(self.list_size), self.list_size[0], self.list_size[0], 5 + self.C, device=bboxes.device)
+        medium_objects = torch.zeros(len(self.list_size), self.list_size[1], self.list_size[1], 5 + self.C, device=bboxes.device)
+        large_objects = torch.zeros(len(self.list_size), self.list_size[2], self.list_size[2], 5 + self.C, device=bboxes.device)
+
+        list_objects = [small_objects, medium_objects, large_objects]
+        for i in range(3):
+            S = list_objects[i].shape[1]
+            w_cell = 1/S
+            h_cell = 1/S
+            wh_cell = torch.tensor([w_cell, h_cell], device=bboxes.device)
+
+            mask = scale_idx == i
+            bboxes_mask = bboxes[mask]
+            labels_mask = labels[mask]
+
+            n_l = len(labels_mask)
+            cls_labels = torch.zeros(n_l, self.C, device=bboxes.device)
+            cls_labels[[*range(n_l)], labels_mask] = 1
+            conf = torch.ones(n_l, 1, device=bboxes.device)
+
+            idx = torch.floor(bboxes_mask[:, :2] / wh_cell).clamp(0, S-1)
+            ij = torch.tensor_split(idx.long(), 2, dim=1)
+            i_idx = ij[0].squeeze(1)
+            j_idx = ij[1].squeeze(1)
+
+            anchor_wh = self.anchors[3 * scale_idx[mask] + achor_idx[mask]]
+
+            bboxes_mask[:, :2] = (bboxes_mask[:, :2] % wh_cell) / wh_cell
+            bboxes_mask[:, 2:] = torch.log(bboxes_mask[:, 2:]/ anchor_wh + 1e-16)
+            bboxes_conf_labels = torch.cat([bboxes_mask, conf, cls_labels], dim=1)
+            list_objects[i][achor_idx[mask], j_idx, i_idx] = bboxes_conf_labels[:, :]
+            list_objects[i] = list_objects[i].permute(1, 2, 0, 3)
+
+        return list_objects
 
     def _transform_pred(self, pred, size, batch_size):
         return pred.permute(0, 2, 3, 1).reshape(batch_size, size, size, 3, -1)
@@ -234,13 +269,29 @@ class YOLOv3Loss(nn.Module):
         batch_size = pred[0].shape[0]
         device = pred[0].device
         losses = []
-        gt_boxes_all = target[3]
+        gt_boxes_all = target
+
+        small_objects, medium_objects, large_objects = [], [], []
+        for b in range(batch_size):
+            gt_boxes_xywh = xyxy2xywh(gt_boxes_all[b][..., :4])
+            iou = iou_wh(gt_boxes_xywh[..., 2:], self.anchors)
+  
+            max_similar = iou.argmax(dim=1)
+            scale_idx = torch.div(max_similar, 3, rounding_mode="floor")
+            achor_idx = max_similar % 3
+            preds = self._create_output(scale_idx, achor_idx, gt_boxes_xywh, gt_boxes_all[b][..., 4].long())
+            small_objects.append(preds[0])
+            medium_objects.append(preds[1])
+            large_objects.append(preds[2])
+
+        all_preds_grid = [torch.stack(small_objects), torch.stack(medium_objects), torch.stack(large_objects)]
 
         for i in range(len(self.list_size)):
             size = pred[i].shape[2]
             anchors_i = self.anchors[3*i : 3*i+3]
+
             pred_i_obj = self._transform_pred(pred[i], size, batch_size)
-            target_i_obj = target[i]
+            target_i_obj = all_preds_grid[i]
 
             pred_xy = torch.sigmoid(pred_i_obj[..., :2])
             pred_wh = pred_i_obj[..., 2:4]
@@ -257,7 +308,7 @@ class YOLOv3Loss(nn.Module):
                 ignore_mask = torch.zeros_like(obj_box_idx, device=device)
 
                 for b in range(batch_size):
-                    gt_xyxy_b = gt_boxes_all[b].to(device)
+                    gt_xyxy_b = gt_boxes_all[b][..., :4].to(device)
                     if gt_xyxy_b.shape[0] == 0:
                         continue
 
